@@ -1537,7 +1537,14 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         )
         metrics = {}
         update_epoch = self.cfg.algorithm.get("update_epoch", 1)
-        for _ in range(update_epoch):
+        auto_update_epoch_cfg = self.cfg.algorithm.get("auto_update_epoch", {})
+        if auto_update_epoch_cfg is None:
+            auto_update_epoch_cfg = {}
+        auto_update_epoch_enabled = auto_update_epoch_cfg.get("enabled", False)
+        target_kl = auto_update_epoch_cfg.get("target_kl", None)
+        update_epoch_early_stopped = False
+        executed_update_epochs = 0
+        for update_epoch_idx in range(update_epoch):
             rollout_dataloader_iter = split_dict_to_chunk(
                 self.rollout_batch,
                 rollout_size // batch_size_per_rank,
@@ -1580,6 +1587,32 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 if len(lr_list) > 1:
                     data["critic/lr"] = lr_list[1]
                 append_to_dict(metrics, data)
+            executed_update_epochs += 1
+            if auto_update_epoch_enabled and target_kl is not None:
+                epoch_kl_vals = metrics.get("actor/approx_kl", [])
+                if epoch_kl_vals:
+                    mean_kl = sum(epoch_kl_vals) / len(epoch_kl_vals)
+                    kl_stats = torch.tensor(
+                        [mean_kl, float(len(epoch_kl_vals))],
+                        device=self.device,
+                    )
+                    torch.distributed.all_reduce(
+                        kl_stats, op=torch.distributed.ReduceOp.SUM
+                    )
+                    global_epoch_kl = (
+                        kl_stats[0].item() / kl_stats[1].item()
+                        if kl_stats[1].item() > 0
+                        else 0.0
+                    )
+                    if (
+                        global_epoch_kl > float(target_kl)
+                        and update_epoch_idx + 1 < update_epoch
+                    ):
+                        update_epoch_early_stopped = True
+        metrics["actor/executed_update_epochs"] = [float(executed_update_epochs)]
+        metrics["actor/update_epoch_early_stopped"] = [
+            float(update_epoch_early_stopped)
+        ]
         # put LR scheduler step here
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
