@@ -15,7 +15,8 @@
 
 | # | 日期 | 文件 | 改动 | 说明 | commit |
 |---|---|---|---|---|---|
-| — | — | — | — | — | — |
+| 1 | 2026-08-05 | `rlinf/algorithms/utils.py` | +56 | `_expand_singleton_action_dim` + `action_level` reshape + GAE expand block | `fab0b616` |
+| 2 | 2026-08-05 | `rlinf/workers/actor/fsdp_actor_worker.py` | +34/-1 | `auto_update_epoch` KL-aware early stopping | `a9b5e735` |
 
 ### 决定不移植
 
