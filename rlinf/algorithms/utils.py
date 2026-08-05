@@ -64,6 +64,19 @@ def kl_penalty(
     raise NotImplementedError
 
 
+def _expand_singleton_action_dim(
+    tensor: Optional[torch.Tensor], target_size: int, name: str
+) -> Optional[torch.Tensor]:
+    if tensor is None or tensor.ndim != 3 or tensor.shape[-1] == target_size:
+        return tensor
+    if tensor.shape[-1] == 1:
+        return tensor.expand(*tensor.shape[:-1], target_size)
+    raise ValueError(
+        f"{name} action dimension must be 1 or match rewards action dimension "
+        f"{target_size}, got {tensor.shape[-1]}."
+    )
+
+
 def preprocess_embodied_advantages_inputs(
     rewards: torch.Tensor,
     dones: torch.Tensor,
@@ -85,6 +98,49 @@ def preprocess_embodied_advantages_inputs(
             loss_mask = loss_mask.max(dim=-1, keepdim=True)[0]
         if loss_mask_sum is not None:
             loss_mask_sum = loss_mask_sum.max(dim=-1, keepdim=True)[0]
+
+    if kwargs["reward_type"] == "action_level":
+        if rewards.ndim > 3:
+            rewards = rewards.reshape(rewards.shape[0], rewards.shape[1], -1)
+        if dones.ndim > 3:
+            dones = dones.reshape(dones.shape[0], dones.shape[1], -1)
+        if values is not None and values.ndim > 3:
+            values = values.reshape(values.shape[0], values.shape[1], -1)
+        if loss_mask is not None and loss_mask.ndim > 3:
+            loss_mask = loss_mask.reshape(loss_mask.shape[0], loss_mask.shape[1], -1)
+        if loss_mask_sum is not None and loss_mask_sum.ndim > 3:
+            loss_mask_sum = loss_mask_sum.reshape(
+                loss_mask_sum.shape[0], loss_mask_sum.shape[1], -1
+            )
+
+        action_chunk_size = rewards.shape[-1]
+        dones = _expand_singleton_action_dim(dones, action_chunk_size, "dones")
+        values = _expand_singleton_action_dim(values, action_chunk_size, "values")
+        loss_mask = _expand_singleton_action_dim(
+            loss_mask, action_chunk_size, "loss_mask"
+        )
+        loss_mask_sum = _expand_singleton_action_dim(
+            loss_mask_sum, action_chunk_size, "loss_mask_sum"
+        )
+
+    if (
+        kwargs["reward_type"] == "action_level"
+        and kwargs["adv_type"] == "gae"
+        and values is not None
+        and values.ndim == 3
+        and rewards.ndim == 3
+        and rewards.shape[-1] == 1
+        and values.shape[-1] > 1
+    ):
+        value_chunk_size = values.shape[-1]
+        rewards = rewards.expand(*rewards.shape[:-1], value_chunk_size)
+        dones = dones.expand(*dones.shape[:-1], value_chunk_size)
+        if loss_mask is not None:
+            loss_mask = loss_mask.expand(*loss_mask.shape[:-1], value_chunk_size)
+        if loss_mask_sum is not None:
+            loss_mask_sum = loss_mask_sum.expand(
+                *loss_mask_sum.shape[:-1], value_chunk_size
+            )
 
     num_chunk, bsz, chunk_size = rewards.shape
     n_steps = num_chunk * chunk_size
