@@ -1545,6 +1545,8 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
         update_epoch_early_stopped = False
         executed_update_epochs = 0
         for update_epoch_idx in range(update_epoch):
+            # Track KL values added during THIS epoch only (not cumulative)
+            kl_count_before = len(metrics.get("actor/approx_kl", []))
             rollout_dataloader_iter = split_dict_to_chunk(
                 self.rollout_batch,
                 rollout_size // batch_size_per_rank,
@@ -1589,11 +1591,15 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                 append_to_dict(metrics, data)
             executed_update_epochs += 1
             if auto_update_epoch_enabled and target_kl is not None:
-                epoch_kl_vals = metrics.get("actor/approx_kl", [])
+                epoch_kl_vals = metrics.get("actor/approx_kl", [])[kl_count_before:]
                 if epoch_kl_vals:
-                    mean_kl = sum(epoch_kl_vals) / len(epoch_kl_vals)
+                    sum_kl = sum(epoch_kl_vals)
+                    cnt = len(epoch_kl_vals)
+                    # Use [sum, count] for correct distributed all_reduce.
+                    # all_reduce SUM → [global_sum, global_count] →
+                    # global_mean = global_sum / global_count.
                     kl_stats = torch.tensor(
-                        [mean_kl, float(len(epoch_kl_vals))],
+                        [sum_kl, float(cnt)],
                         device=self.device,
                     )
                     torch.distributed.all_reduce(
@@ -1609,6 +1615,7 @@ class EmbodiedFSDPActor(FSDPModelManager, Worker):
                         and update_epoch_idx + 1 < update_epoch
                     ):
                         update_epoch_early_stopped = True
+                        break
         metrics["actor/executed_update_epochs"] = [float(executed_update_epochs)]
         metrics["actor/update_epoch_early_stopped"] = [
             float(update_epoch_early_stopped)
