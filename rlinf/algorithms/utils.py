@@ -67,6 +67,25 @@ def kl_penalty(
 def _expand_singleton_action_dim(
     tensor: Optional[torch.Tensor], target_size: int, name: str
 ) -> Optional[torch.Tensor]:
+    """Expand a singleton trailing dimension to match a target action chunk size.
+
+    When ``reward_type`` is ``action_level``, auxiliary tensors (dones, values,
+    loss_mask) may arrive with a scalar trailing dim ``[..., 1]`` while the
+    corresponding rewards have ``[..., C]`` where ``C`` is the action chunk
+    size.  This helper broadcasts the singleton dimension to match.
+
+    Args:
+        tensor: Tensor to possibly expand.  None and non-3-D tensors are
+            returned unchanged.
+        target_size: Target size for the last dimension (``chunk_size``).
+        name: Human-readable label used in error messages.
+
+    Returns:
+        The expanded tensor, or the original tensor if no expansion is needed.
+
+    Raises:
+        ValueError: If ``tensor.shape[-1]`` is neither 1 nor ``target_size``.
+    """
     if tensor is None or tensor.ndim != 3 or tensor.shape[-1] == target_size:
         return tensor
     if tensor.shape[-1] == 1:
